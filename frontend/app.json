@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "ExpertBook",
+    "slug": "expert-booking-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#0F172A"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.expertbooking.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0F172A"
+      },
+      "package": "com.expertbooking.app"
+    },
+    "assetBundlePatterns": ["**/*"]
+  }
+}
