@@ -1,95 +1,122 @@
 import React from "react";
 import { View, Text, StyleSheet, ScrollView } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { COLORS, SPACING, RADIUS } from "../constants/theme";
-import { Button, Card } from "../components/UI";
+import { COLORS, FONTS, GUTTER, RADIUS, SPACING, TYPE } from "../constants/theme";
+import { bookingRef, formatDate, formatPrice } from "../utils/format";
+import { Button, StatusBadge } from "../components/UI";
 
-function fmtDate(str) {
-  if (!str) return "";
-  const d = new Date(str + "T00:00:00");
-  return d.toLocaleDateString("en-IN", {
-    weekday: "long", day: "numeric", month: "long",
-  });
+function Row({ label, children }) {
+  return (
+    <View style={styles.row}>
+      <Text style={TYPE.small}>{label}</Text>
+      {typeof children === "string" ? <Text style={styles.rowValue}>{children}</Text> : children}
+    </View>
+  );
 }
 
 export default function BookingSuccessScreen({ route, navigation }) {
-  const { booking, expertName } = route.params;
-
-  const rows = [
-    ["Expert", expertName],
-    ["Date", fmtDate(booking.date)],
-    ["Time", booking.timeSlot],
-    ["Name", booking.userName],
-    ["Email", booking.email],
-    ["Phone", booking.phone],
-    ["Status", booking.status],
-  ];
+  const { booking, expertName, hourlyRate } = route.params;
+  const insets = useSafeAreaInsets();
 
   return (
     <ScrollView
-      style={{ flex: 1, backgroundColor: COLORS.background }}
-      contentContainerStyle={styles.container}
+      style={styles.container}
+      contentContainerStyle={[
+        styles.content,
+        { paddingTop: insets.top + 56, paddingBottom: insets.bottom + SPACING.lg },
+      ]}
+      showsVerticalScrollIndicator={false}
     >
-      {/* Icon */}
-      <View style={styles.iconWrap}>
-        <Ionicons name="checkmark-circle" size={72} color={COLORS.accent} />
+      <View style={styles.hero}>
+        <View style={styles.checkOuter}>
+          <View style={styles.checkInner}>
+            <Ionicons name="checkmark" size={32} color="#fff" />
+          </View>
+        </View>
+        <Text style={styles.title} accessibilityRole="header">You're booked</Text>
+        <Text style={styles.subtitle}>
+          Your session with {expertName} is confirmed for {formatDate(booking.date, "day")} at {booking.timeSlot}.
+        </Text>
       </View>
 
-      <Text style={styles.title}>Booking Confirmed! 🎉</Text>
-      <Text style={styles.subtitle}>
-        Your session has been booked. A confirmation will be sent to your email.
-      </Text>
+      {/* Ticket */}
+      <View style={styles.ticket}>
+        <View style={styles.ticketBody}>
+          <Row label="Expert">{expertName}</Row>
+          <Row label="Date">{formatDate(booking.date, "mediumDay")}</Row>
+          <Row label="Time">{`${booking.timeSlot} · 60 min`}</Row>
+          {hourlyRate != null && <Row label="Fee">{formatPrice(hourlyRate)}</Row>}
+          <Row label="Status"><StatusBadge status={booking.status} /></Row>
+        </View>
+        {/* Dashed single edges don't render on iOS, so clip a dashed box to its top edge */}
+        <View style={styles.perforationClip}>
+          <View style={styles.perforationLine} />
+        </View>
+        <View style={styles.ticketFoot}>
+          <Text style={TYPE.small}>Booking ref</Text>
+          <Text style={styles.ref}>#{bookingRef(booking)}</Text>
+        </View>
+      </View>
 
-      <Card style={styles.detailCard}>
-        {rows.map(([label, value]) => (
-          <View key={label} style={styles.row}>
-            <Text style={styles.rowLabel}>{label}</Text>
-            <Text style={styles.rowValue}>{value}</Text>
-          </View>
-        ))}
-      </Card>
-
-      <Text style={styles.refText}>
-        Ref #{booking._id?.slice(-10).toUpperCase()}
-      </Text>
-
-      <Button
-        title="View My Bookings"
-        onPress={() => navigation.navigate("My Bookings")}
-        style={styles.btn}
-      />
-      <Button
-        title="Back to Experts"
-        variant="outline"
-        onPress={() => navigation.navigate("Experts", { screen: "ExpertsList" })}
-        style={styles.btn}
-      />
+      <View style={styles.actions}>
+        <Button
+          title="View my bookings"
+          onPress={() => navigation.popTo("Tabs", { screen: "MyBookings" })}
+        />
+        <Button
+          title="Back to experts"
+          variant="secondary"
+          onPress={() => navigation.popTo("Tabs", { screen: "Experts" })}
+        />
+        <Text style={[TYPE.caption, { textAlign: "center", marginTop: 4 }]}>
+          You can view or cancel it anytime from My bookings.
+        </Text>
+      </View>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flexGrow: 1,
-    alignItems: "center",
-    padding: SPACING.lg,
-    paddingTop: SPACING.xl,
-    gap: 14,
-  },
-  iconWrap: {
-    width: 110, height: 110, borderRadius: 55,
-    backgroundColor: "#ECFDF5",
+  container: { flex: 1, backgroundColor: COLORS.ground },
+  content: { flexGrow: 1, paddingHorizontal: GUTTER },
+  hero: { alignItems: "center", gap: SPACING.md },
+  checkOuter: {
+    width: 88, height: 88, borderRadius: 44,
+    backgroundColor: COLORS.accentTint,
     alignItems: "center", justifyContent: "center",
   },
-  title: { fontSize: 24, fontWeight: "800", color: COLORS.textPrimary, textAlign: "center" },
-  subtitle: { fontSize: 14, color: COLORS.textSecondary, textAlign: "center", lineHeight: 20 },
-  detailCard: { width: "100%", gap: 10 },
-  row: {
-    flexDirection: "row", justifyContent: "space-between",
-    paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: COLORS.borderLight,
+  checkInner: {
+    width: 60, height: 60, borderRadius: 30,
+    backgroundColor: COLORS.accent,
+    alignItems: "center", justifyContent: "center",
   },
-  rowLabel: { fontSize: 13, color: COLORS.textMuted, fontWeight: "500" },
-  rowValue: { fontSize: 13, color: COLORS.textPrimary, fontWeight: "600", maxWidth: "60%", textAlign: "right" },
-  refText: { fontSize: 12, color: COLORS.textMuted, fontVariant: ["tabular-nums"] },
-  btn: { width: "100%" },
+  title: {
+    fontFamily: FONTS.extrabold, fontSize: 26, lineHeight: 32, letterSpacing: -0.4,
+    color: COLORS.ink, marginTop: SPACING.sm,
+  },
+  subtitle: { ...TYPE.body, textAlign: "center", maxWidth: 300 },
+  ticket: {
+    marginTop: 28,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    borderRadius: RADIUS.hero,
+    overflow: "hidden",
+  },
+  ticketBody: { padding: 18, gap: SPACING.md },
+  row: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: SPACING.lg },
+  rowValue: { fontFamily: FONTS.bold, fontSize: 14, lineHeight: 20, color: COLORS.ink, flexShrink: 1, textAlign: "right" },
+  perforationClip: { height: 1.5, marginHorizontal: 18, overflow: "hidden" },
+  perforationLine: { height: 6, borderWidth: 1.5, borderColor: COLORS.line, borderStyle: "dashed", borderRadius: 1 },
+  ticketFoot: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    backgroundColor: COLORS.surfaceSunken,
+  },
+  ref: { fontFamily: FONTS.extrabold, fontSize: 15, letterSpacing: 1, color: COLORS.ink, fontVariant: ["tabular-nums"] },
+  actions: { marginTop: "auto", paddingTop: SPACING.xxxl, gap: 10 },
 });
