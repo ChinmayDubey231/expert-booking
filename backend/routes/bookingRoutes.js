@@ -1,11 +1,16 @@
 const express = require("express");
 const router = express.Router();
-const { body, query, validationResult } = require("express-validator");
+const { body, param, query, validationResult } = require("express-validator");
+const Booking = require("../models/Booking");
 const {
   createBooking,
   getBookingsByEmail,
+  cancelBooking,
   updateBookingStatus,
 } = require("../controllers/bookingController");
+
+const STATUSES = Booking.schema.path("status").enumValues;
+const TIME_SLOT = /^(0[1-9]|1[0-2]):[0-5]\d (AM|PM)$/;
 
 // Validation middleware runner
 const validate = (req, res, next) => {
@@ -13,18 +18,20 @@ const validate = (req, res, next) => {
   if (!errors.isEmpty()) {
     return res.status(422).json({
       success: false,
-      message: "Validation failed",
+      message: errors.array()[0].msg,
       errors: errors.array().map((e) => ({ field: e.path, message: e.msg })),
     });
   }
   next();
 };
 
+const bookingIdParam = param("id").isMongoId().withMessage("Invalid booking ID");
+
 // POST /bookings
 router.post(
   "/",
   [
-    body("expertId").notEmpty().withMessage("Expert ID is required"),
+    body("expertId").isMongoId().withMessage("Invalid expert ID"),
     body("userName")
       .trim()
       .notEmpty()
@@ -36,8 +43,10 @@ router.post(
       .notEmpty()
       .withMessage("Email is required")
       .isEmail()
-      .withMessage("Invalid email address"),
+      .withMessage("Invalid email address")
+      .toLowerCase(),
     body("phone")
+      .trim()
       .notEmpty()
       .withMessage("Phone is required")
       .matches(/^[6-9]\d{9}$/)
@@ -47,9 +56,13 @@ router.post(
       .withMessage("Date is required")
       .matches(/^\d{4}-\d{2}-\d{2}$/)
       .withMessage("Date must be in YYYY-MM-DD format"),
-    body("timeSlot").notEmpty().withMessage("Time slot is required"),
+    body("timeSlot")
+      .trim()
+      .matches(TIME_SLOT)
+      .withMessage("Time slot must look like 10:00 AM"),
     body("notes")
       .optional()
+      .trim()
       .isLength({ max: 500 })
       .withMessage("Notes cannot exceed 500 characters"),
   ],
@@ -60,15 +73,26 @@ router.post(
 // GET /bookings?email=
 router.get(
   "/",
-  [query("email").notEmpty().withMessage("Email query param is required").isEmail()],
+  [query("email").trim().isEmail().withMessage("A valid email query param is required")],
   validate,
   getBookingsByEmail
 );
 
-// PATCH /bookings/:id/status
+// PATCH /bookings/:id/cancel — used by the app; requires the booking's email
+router.patch(
+  "/:id/cancel",
+  [bookingIdParam, body("email").trim().isEmail().withMessage("Email is required to cancel")],
+  validate,
+  cancelBooking
+);
+
+// PATCH /bookings/:id/status — admin / testing
 router.patch(
   "/:id/status",
-  [body("status").notEmpty().withMessage("Status is required")],
+  [
+    bookingIdParam,
+    body("status").isIn(STATUSES).withMessage(`Status must be one of: ${STATUSES.join(", ")}`),
+  ],
   validate,
   updateBookingStatus
 );

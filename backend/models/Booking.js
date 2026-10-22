@@ -23,21 +23,29 @@ const bookingSchema = new mongoose.Schema(
     },
     date: { type: String, required: true },  // "YYYY-MM-DD"
     timeSlot: { type: String, required: true }, // "10:00 AM"
-    notes: { type: String, default: "", maxlength: 500 },
+    notes: { type: String, default: "", trim: true, maxlength: 500 },
     status: {
       type: String,
       enum: ["Pending", "Confirmed", "Completed", "Cancelled"],
-      default: "Pending",
+      // The slot is reserved atomically at creation and there is no approval step
+      default: "Confirmed",
     },
   },
   { timestamps: true }
 );
 
-// Compound unique index — prevents double booking at DB level
-// This is the critical race-condition safeguard
+// Unique per slot among non-cancelled bookings — the DB-level double-booking safeguard.
+// Partial so that a cancelled booking doesn't block the freed slot from being rebooked.
 bookingSchema.index(
   { expertId: 1, date: 1, timeSlot: 1 },
-  { unique: true, name: "prevent_double_booking" }
+  {
+    unique: true,
+    name: "one_active_booking_per_slot",
+    partialFilterExpression: { status: { $in: ["Pending", "Confirmed", "Completed"] } },
+  }
 );
+
+// GET /bookings?email=
+bookingSchema.index({ email: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Booking", bookingSchema);

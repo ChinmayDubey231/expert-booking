@@ -1,297 +1,489 @@
-import React, { useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
-  View,
-  Text,
-  FlatList,
-  TextInput,
-  StyleSheet,
-  TouchableOpacity,
-  RefreshControl,
+  View, Text, FlatList, TextInput, StyleSheet,
+  Pressable, RefreshControl, Alert, ActivityIndicator,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { fetchBookingsByEmail } from "../services/api";
-import { COLORS, SPACING, RADIUS, SHADOW } from "../constants/theme";
-import {
-  Card,
-  StatusBadge,
-  LoadingSpinner,
-  ErrorState,
-  EmptyState,
-} from "../components/UI";
+import { useFocusEffect } from "@react-navigation/native";
+import { cancelBooking, fetchBookingsByEmail } from "../services/api";
+import { useProfile } from "../context/ProfileContext";
+import { COLORS, FONTS, GUTTER, RADIUS, SHADOW, SPACING, TYPE } from "../constants/theme";
+import { bookingRef, formatDate, parseDateKey, slotStart } from "../utils/format";
+import { Button, StatusBadge, LoadingSpinner, ErrorState, EmptyState } from "../components/UI";
 
-function fmtDate(str) {
-  const d = new Date(str + "T00:00:00");
-  return d.toLocaleDateString("en-IN", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+const TABS = ["Upcoming", "Past", "Cancelled"];
+const EMAIL_RE = /^\S+@\S+\.\S+$/;
+
+const EMPTY_COPY = {
+  Upcoming: { icon: "calendar-outline", title: "No upcoming sessions", subtitle: "Book a session with an expert and it will show up here." },
+  Past: { icon: "time-outline", title: "No past sessions yet", subtitle: "Sessions you've had will appear here." },
+  Cancelled: { icon: "close-circle-outline", title: "No cancelled bookings", subtitle: "Anything you cancel will be listed here." },
+};
+
+function tabOf(booking, now) {
+  if (booking.status === "Cancelled") return "Cancelled";
+  if (booking.status === "Completed") return "Past";
+  return slotStart(booking.date, booking.timeSlot) > now ? "Upcoming" : "Past";
 }
 
-function DetailRow({ icon, label, value }) {
+function DateBlock({ dateKey, muted }) {
+  const d = parseDateKey(dateKey);
   return (
-    <View style={styles.detailRow}>
-      <Ionicons name={icon} size={13} color={COLORS.textMuted} />
-      <Text style={styles.detailLabel}>{label}</Text>
-      <Text style={styles.detailValue} numberOfLines={2}>
-        {value}
+    <View style={[styles.dateBlock, muted && styles.dateBlockMuted]}>
+      <Text style={[styles.dateMonth, muted && { color: COLORS.textMuted }]}>
+        {d.toLocaleDateString("en-IN", { month: "short" }).toUpperCase()}
       </Text>
+      <Text style={styles.dateDay}>{d.getDate()}</Text>
+      <Text style={styles.dateWeekday}>{d.toLocaleDateString("en-IN", { weekday: "short" })}</Text>
     </View>
   );
 }
 
-export default function MyBookingsScreen() {
-  const [email, setEmail] = useState("");
+export default function MyBookingsScreen({ navigation }) {
+  const insets = useSafeAreaInsets();
+  const { profile, ready, updateProfile, clearProfile } = useProfile();
+  const email = profile.email;
+
+  const [emailInput, setEmailInput] = useState("");
+  const [editing, setEditing] = useState(false);
   const [bookings, setBookings] = useState([]);
+  const [loadedFor, setLoadedFor] = useState(null); // email the current list belongs to
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
-  const [searched, setSearched] = useState(false);
-  const [lastEmail, setLastEmail] = useState("");
+  const [tab, setTab] = useState("Upcoming");
+  const [cancellingId, setCancellingId] = useState(null);
+  const requestIdRef = useRef(0);
+  const loadedForRef = useRef(null);
 
-  const validEmail = /^\S+@\S+\.\S+$/.test(email.trim());
-
-  async function doSearch(isRefresh = false) {
-    if (!validEmail) return;
-    const q = email.trim().toLowerCase();
-    if (isRefresh) setRefreshing(true);
-    else setLoading(true);
-    setError(null);
-    try {
-      const res = await fetchBookingsByEmail(q);
-      setBookings(res.data);
-      setLastEmail(q);
-      setSearched(true);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+  // mode: "initial" (spinner) | "refresh" (pull-to-refresh) | "silent" (tab re-focused)
+  const load = useCallback(async (forEmail, mode) => {
+    const requestId = ++requestIdRef.current;
+    if (mode === "initial") {
+      setLoading(true);
+      setError(null);
     }
-  }
+    if (mode === "refresh") setRefreshing(true);
+    try {
+      const res = await fetchBookingsByEmail(forEmail);
+      if (requestId !== requestIdRef.current) return; // a newer lookup is in flight
+      setBookings(res.data);
+      setError(null);
+      loadedForRef.current = forEmail;
+      setLoadedFor(forEmail);
+    } catch (e) {
+      if (requestId !== requestIdRef.current) return;
+      if (mode === "initial") setError(e.message);
+      else if (mode === "refresh") Alert.alert("Couldn't refresh", e.message);
+    } finally {
+      if (requestId === requestIdRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    }
+  }, []);
 
-  const renderItem = ({ item }) => (
-    <Card style={styles.bookingCard}>
-      <View style={styles.cardHeader}>
-        <Text style={styles.expertName} numberOfLines={1}>
-          {item.expertName}
-        </Text>
-        <StatusBadge status={item.status} />
-      </View>
-      <View style={styles.divider} />
-      <View style={styles.details}>
-        <DetailRow
-          icon="calendar-outline"
-          label="Date"
-          value={fmtDate(item.date)}
-        />
-        <DetailRow icon="time-outline" label="Time" value={item.timeSlot} />
-        <DetailRow icon="person-outline" label="Name" value={item.userName} />
-        {item.notes ? (
-          <DetailRow
-            icon="document-text-outline"
-            label="Notes"
-            value={item.notes}
-          />
-        ) : null}
-      </View>
-      <View style={styles.footer}>
-        <Text style={styles.ref}>#{item._id?.slice(-8).toUpperCase()}</Text>
-        <Text style={styles.createdAt}>
-          {new Date(item.createdAt).toLocaleDateString("en-IN")}
-        </Text>
-      </View>
-    </Card>
+  // Reload whenever this tab comes into view, so a booking made a moment ago shows up
+  useFocusEffect(
+    useCallback(() => {
+      if (email) load(email, loadedForRef.current === email ? "silent" : "initial");
+    }, [email, load])
   );
 
-  // Summary counts
-  const counts = bookings.reduce((acc, b) => {
-    acc[b.status] = (acc[b.status] || 0) + 1;
-    return acc;
-  }, {});
+  const grouped = useMemo(() => {
+    const now = new Date();
+    const out = { Upcoming: [], Past: [], Cancelled: [] };
+    bookings.forEach((b) => out[tabOf(b, now)].push(b));
+    const start = (b) => slotStart(b.date, b.timeSlot).getTime();
+    out.Upcoming.sort((a, b) => start(a) - start(b)); // soonest first
+    out.Past.sort((a, b) => start(b) - start(a)); // most recent first
+    out.Cancelled.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+    return out;
+  }, [bookings]);
+
+  // ── Email ──────────────────────────────────────────────────────
+  const inputValid = EMAIL_RE.test(emailInput.trim());
+
+  const submitEmail = () => {
+    const next = emailInput.trim().toLowerCase();
+    if (!EMAIL_RE.test(next)) return;
+    setEditing(false);
+    // A new email re-runs the focus effect above, which loads it
+    if (next === email) load(next, "initial");
+    else updateProfile({ email: next });
+  };
+
+  const startEditing = () => {
+    setEmailInput(email);
+    setEditing(true);
+  };
+
+  const forgetDetails = () =>
+    Alert.alert(
+      "Forget saved details?",
+      "Your name, email and phone will be removed from this device. Your bookings stay as they are.",
+      [
+        { text: "Keep", style: "cancel" },
+        {
+          text: "Forget",
+          style: "destructive",
+          onPress: () => {
+            clearProfile();
+            setEditing(false);
+            setEmailInput("");
+            setBookings([]);
+            setLoadedFor(null);
+            loadedForRef.current = null;
+          },
+        },
+      ]
+    );
+
+  // ── Actions ────────────────────────────────────────────────────
+  const doCancel = async (booking) => {
+    setCancellingId(booking._id);
+    try {
+      const res = await cancelBooking(booking._id, booking.email);
+      setBookings((prev) => prev.map((b) => (b._id === booking._id ? res.data : b)));
+    } catch (e) {
+      Alert.alert("Couldn't cancel", e.message);
+      load(email, "silent"); // it may have changed elsewhere
+    } finally {
+      setCancellingId(null);
+    }
+  };
+
+  const confirmCancel = (booking) =>
+    Alert.alert(
+      "Cancel this session?",
+      `${booking.expertName}\n${formatDate(booking.date, "short")} at ${booking.timeSlot}\n\nThe slot will be released for others to book.`,
+      [
+        { text: "Keep booking", style: "cancel" },
+        { text: "Cancel session", style: "destructive", onPress: () => doCancel(booking) },
+      ]
+    );
+
+  const bookAgain = (booking) =>
+    navigation.navigate("ExpertDetail", { expertId: String(booking.expertId) });
+
+  const renderItem = ({ item }) => {
+    const cancelling = cancellingId === item._id;
+    const upcoming = tab === "Upcoming";
+    return (
+      <View style={styles.card}>
+        <View style={styles.cardTop}>
+          <DateBlock dateKey={item.date} muted={!upcoming} />
+          <View style={styles.cardInfo}>
+            <Text style={TYPE.bodyStrong} numberOfLines={1}>{item.expertName}</Text>
+            <Text style={TYPE.small}>{item.timeSlot} · 60 min</Text>
+            <StatusBadge status={item.status} small />
+          </View>
+        </View>
+        {!!item.notes && (
+          <Text style={[TYPE.small, styles.notes]} numberOfLines={2}>“{item.notes}”</Text>
+        )}
+        <View style={styles.cardFooter}>
+          <Text style={styles.ref}>#{bookingRef(item)}</Text>
+          {upcoming ? (
+            <Pressable
+              onPress={() => confirmCancel(item)}
+              disabled={cancelling}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel={`Cancel session with ${item.expertName}`}
+              style={({ pressed }) => [styles.cancelBtn, pressed && { backgroundColor: COLORS.dangerTint }]}
+            >
+              {cancelling ? (
+                <ActivityIndicator size="small" color={COLORS.danger} />
+              ) : (
+                <Text style={styles.cancelText}>Cancel</Text>
+              )}
+            </Pressable>
+          ) : (
+            <Pressable
+              onPress={() => bookAgain(item)}
+              hitSlop={6}
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.againBtn, pressed && { opacity: 0.7 }]}
+            >
+              <Text style={styles.againText}>Book again</Text>
+              <Ionicons name="chevron-forward" size={15} color={COLORS.accent} />
+            </Pressable>
+          )}
+        </View>
+      </View>
+    );
+  };
+
+  if (!ready) return <LoadingSpinner text="" />;
+
+  const showEmailForm = !email || editing;
+  const hasResults = !!email && loadedFor === email;
+  const empty = EMPTY_COPY[tab];
+
+  let body;
+  if (!email) {
+    body = (
+      <EmptyState
+        icon="mail-outline"
+        title="See your sessions"
+        subtitle="Enter the email you used while booking to view, cancel or rebook your sessions."
+      />
+    );
+  } else if (error && !hasResults) {
+    body = <ErrorState message={error} onRetry={() => load(email, "initial")} />;
+  } else if (loading || !hasResults) {
+    body = <LoadingSpinner text="Fetching your bookings..." />;
+  } else {
+    body = (
+      <FlatList
+        data={grouped[tab]}
+        renderItem={renderItem}
+        keyExtractor={(item) => item._id}
+        contentContainerStyle={styles.list}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => load(email, "refresh")}
+            tintColor={COLORS.accent}
+            colors={[COLORS.accent]}
+          />
+        }
+        ListEmptyComponent={
+          <EmptyState icon={empty.icon} title={empty.title} subtitle={empty.subtitle}>
+            {tab === "Upcoming" && (
+              <Button
+                title="Find an expert"
+                size="sm"
+                onPress={() => navigation.navigate("Experts")}
+                style={{ marginTop: SPACING.lg }}
+              />
+            )}
+          </EmptyState>
+        }
+      />
+    );
+  }
 
   return (
     <View style={styles.container}>
-      {/* Email search header */}
-      <View style={styles.header}>
-        <Text style={styles.headerSub}>Enter the email used while booking</Text>
-        <View style={styles.inputRow}>
-          <TextInput
-            style={styles.emailInput}
-            value={email}
-            onChangeText={setEmail}
-            placeholder="you@example.com"
-            placeholderTextColor={COLORS.textMuted}
-            keyboardType="email-address"
-            autoCapitalize="none"
-            returnKeyType="search"
-            onSubmitEditing={() => doSearch()}
-          />
-          <TouchableOpacity
-            style={[styles.searchBtn, !validEmail && styles.searchBtnDisabled]}
-            onPress={() => doSearch()}
-            disabled={!validEmail || loading}
-          >
-            <Ionicons
-              name="search"
-              size={19}
-              color={validEmail ? "#fff" : COLORS.textMuted}
-            />
-          </TouchableOpacity>
-        </View>
+      <View style={[styles.header, { paddingTop: insets.top + SPACING.sm }]}>
+        <Text style={TYPE.display} accessibilityRole="header">My bookings</Text>
+
+        {showEmailForm ? (
+          <View style={styles.emailForm}>
+            <Text style={styles.emailLabel}>Email used while booking</Text>
+            <View style={styles.inputRow}>
+              <TextInput
+                style={styles.emailInput}
+                value={emailInput}
+                onChangeText={setEmailInput}
+                placeholder="you@example.com"
+                placeholderTextColor={COLORS.placeholder}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoComplete="email"
+                autoCorrect={false}
+                autoFocus={editing}
+                returnKeyType="search"
+                onSubmitEditing={submitEmail}
+                accessibilityLabel="Email used while booking"
+              />
+              <Pressable
+                style={[styles.searchBtn, !inputValid && styles.searchBtnDisabled]}
+                onPress={submitEmail}
+                disabled={!inputValid}
+                accessibilityRole="button"
+                accessibilityLabel="Find bookings"
+              >
+                <Ionicons name="arrow-forward" size={20} color={inputValid ? "#fff" : COLORS.textMuted} />
+              </Pressable>
+            </View>
+            {editing && (
+              <View style={styles.editActions}>
+                <Pressable onPress={() => setEditing(false)} hitSlop={10} accessibilityRole="button">
+                  <Text style={styles.linkText}>Cancel</Text>
+                </Pressable>
+                <Pressable onPress={forgetDetails} hitSlop={10} accessibilityRole="button">
+                  <Text style={[styles.linkText, { color: COLORS.danger }]}>Forget saved details</Text>
+                </Pressable>
+              </View>
+            )}
+          </View>
+        ) : (
+          <View style={styles.emailRow}>
+            <View style={styles.mailIcon}>
+              <Ionicons name="mail-outline" size={18} color={COLORS.accent} />
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={TYPE.caption}>Showing bookings for</Text>
+              <Text style={styles.emailText} numberOfLines={1}>{email}</Text>
+            </View>
+            <Pressable onPress={startEditing} style={styles.changeBtn} accessibilityRole="button">
+              <Text style={styles.linkText}>Change</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {hasResults && !loading && (
+          <View style={styles.segments} accessibilityRole="tablist">
+            {TABS.map((t) => {
+              const active = tab === t;
+              return (
+                <Pressable
+                  key={t}
+                  style={[styles.segment, active && styles.segmentActive]}
+                  onPress={() => setTab(t)}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: active }}
+                >
+                  <Text style={[styles.segmentText, active && styles.segmentTextActive]}>{t}</Text>
+                  <Text style={[styles.segmentCount, active && styles.segmentCountActive]}>
+                    {grouped[t].length}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        )}
       </View>
 
-      {/* States */}
-      {loading && <LoadingSpinner text="Fetching your bookings..." />}
-      {!loading && error && (
-        <ErrorState message={error} onRetry={() => doSearch()} />
-      )}
-
-      {!loading && searched && !error && (
-        <>
-          {/* Stats */}
-          {bookings.length > 0 && (
-            <View style={styles.statsRow}>
-              <Text style={styles.statsTotal}>
-                {bookings.length} booking{bookings.length !== 1 ? "s" : ""}
-              </Text>
-              {Object.entries(counts).map(([status, count]) => (
-                <View key={status} style={styles.statBadge}>
-                  <Text style={styles.statCount}>{count}</Text>
-                  <Text style={styles.statLabel}>{status}</Text>
-                </View>
-              ))}
-            </View>
-          )}
-
-          <FlatList
-            data={bookings}
-            renderItem={renderItem}
-            keyExtractor={(item) => item._id}
-            contentContainerStyle={styles.list}
-            showsVerticalScrollIndicator={false}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={() => doSearch(true)}
-                tintColor={COLORS.primary}
-              />
-            }
-            ListEmptyComponent={
-              <EmptyState
-                icon="📅"
-                title="No bookings found"
-                subtitle={`Nothing found for ${lastEmail}`}
-              />
-            }
-          />
-        </>
-      )}
-
-      {!loading && !searched && !error && (
-        <View style={styles.prompt}>
-          <Text style={{ fontSize: 52 }}>📬</Text>
-          <Text style={styles.promptText}>
-            Enter your email address to view all your booked sessions.
-          </Text>
-        </View>
-      )}
+      {body}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.background },
-  header: {
-    backgroundColor: COLORS.secondary,
-    paddingHorizontal: SPACING.md,
-    paddingTop: SPACING.sm,
-    paddingBottom: SPACING.md,
-    gap: 6,
+  container: { flex: 1, backgroundColor: COLORS.ground },
+  header: { paddingHorizontal: GUTTER, gap: SPACING.lg },
+  emailRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: SPACING.md,
+    paddingVertical: 10,
+    paddingLeft: SPACING.md,
+    paddingRight: 4,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    borderRadius: 14,
   },
-  headerSub: { fontSize: 13, color: "#94A3B8", marginBottom: 6 },
+  mailIcon: {
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: COLORS.accentTint,
+    alignItems: "center", justifyContent: "center",
+  },
+  emailText: { fontFamily: FONTS.bold, fontSize: 14, lineHeight: 20, color: COLORS.ink },
+  changeBtn: { height: 44, paddingHorizontal: SPACING.md, justifyContent: "center" },
+  linkText: { fontFamily: FONTS.bold, fontSize: 13, color: COLORS.accent },
+  emailForm: {
+    gap: SPACING.sm,
+    padding: 14,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    borderRadius: RADIUS.card,
+  },
+  emailLabel: { fontFamily: FONTS.semibold, fontSize: 13, lineHeight: 18, color: COLORS.textSecondary },
   inputRow: { flexDirection: "row", gap: 10 },
   emailInput: {
     flex: 1,
-    backgroundColor: "#fff",
-    borderRadius: RADIUS.md,
-    paddingHorizontal: 13,
-    paddingVertical: 11,
+    height: 48,
+    paddingHorizontal: 14,
+    borderWidth: 1.5,
+    borderColor: COLORS.line,
+    borderRadius: RADIUS.field,
+    backgroundColor: COLORS.surface,
+    fontFamily: FONTS.medium,
     fontSize: 15,
-    color: COLORS.textPrimary,
+    color: COLORS.ink,
   },
   searchBtn: {
-    width: 46,
-    height: 46,
-    borderRadius: RADIUS.md,
-    backgroundColor: COLORS.primary,
+    width: 48, height: 48, borderRadius: RADIUS.field,
+    backgroundColor: COLORS.accent, alignItems: "center", justifyContent: "center",
+  },
+  searchBtnDisabled: { backgroundColor: COLORS.lineSoft },
+  editActions: { flexDirection: "row", justifyContent: "space-between", paddingTop: 4 },
+  segments: {
+    flexDirection: "row",
+    gap: 4,
+    padding: 4,
+    borderRadius: RADIUS.field,
+    backgroundColor: COLORS.segment,
+  },
+  segment: {
+    flex: 1,
+    height: 40,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    gap: 6,
+    borderRadius: 9,
   },
-  searchBtnDisabled: { backgroundColor: COLORS.border },
-  statsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    paddingHorizontal: SPACING.md,
-    paddingVertical: 8,
-    backgroundColor: COLORS.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  statsTotal: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: "700",
-    color: COLORS.textPrimary,
-  },
-  statBadge: { alignItems: "center" },
-  statCount: { fontSize: 15, fontWeight: "800", color: COLORS.primary },
-  statLabel: { fontSize: 10, color: COLORS.textMuted },
-  list: { padding: SPACING.md, gap: 12, paddingBottom: 40 },
-  bookingCard: { gap: 10 },
-  cardHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  expertName: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: COLORS.textPrimary,
-    flex: 1,
-    marginRight: 8,
-  },
-  divider: { height: 1, backgroundColor: COLORS.borderLight },
-  details: { gap: 7 },
-  detailRow: { flexDirection: "row", alignItems: "flex-start", gap: 7 },
-  detailLabel: { fontSize: 12, color: COLORS.textMuted, width: 38 },
-  detailValue: {
-    fontSize: 13,
-    fontWeight: "500",
-    color: COLORS.textPrimary,
-    flex: 1,
-  },
-  footer: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.borderLight,
-  },
-  ref: { fontSize: 11, color: COLORS.textMuted },
-  createdAt: { fontSize: 11, color: COLORS.textMuted },
-  prompt: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 12,
-    padding: SPACING.xl,
-  },
-  promptText: {
-    fontSize: 15,
-    color: COLORS.textSecondary,
+  segmentActive: { backgroundColor: COLORS.surface, ...SHADOW.raised },
+  segmentText: { fontFamily: FONTS.semibold, fontSize: 13, color: COLORS.textSecondary },
+  segmentTextActive: { fontFamily: FONTS.bold, color: COLORS.ink },
+  segmentCount: { fontFamily: FONTS.bold, fontSize: 11, color: COLORS.textSecondary },
+  segmentCountActive: {
+    minWidth: 20,
+    paddingHorizontal: 6,
+    lineHeight: 20,
+    borderRadius: 10,
+    overflow: "hidden",
     textAlign: "center",
-    lineHeight: 22,
+    fontFamily: FONTS.extrabold,
+    color: COLORS.accent,
+    backgroundColor: COLORS.accentTint,
   },
+  list: { padding: GUTTER, paddingTop: SPACING.lg, gap: SPACING.md, flexGrow: 1 },
+  card: {
+    gap: SPACING.md,
+    padding: 14,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    borderRadius: RADIUS.card,
+  },
+  cardTop: { flexDirection: "row", alignItems: "center", gap: 14 },
+  cardInfo: { flex: 1, minWidth: 0, gap: 4 },
+  dateBlock: {
+    width: 56,
+    height: 64,
+    borderRadius: RADIUS.field,
+    backgroundColor: COLORS.accentTint,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dateBlockMuted: { backgroundColor: COLORS.lineSoft },
+  dateMonth: { fontFamily: FONTS.bold, fontSize: 11, lineHeight: 14, letterSpacing: 0.6, color: COLORS.accent },
+  dateDay: { fontFamily: FONTS.extrabold, fontSize: 22, lineHeight: 26, color: COLORS.ink },
+  dateWeekday: { fontFamily: FONTS.semibold, fontSize: 11, lineHeight: 14, color: COLORS.textSecondary },
+  notes: { fontFamily: FONTS.regular },
+  cardFooter: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.lineSoft,
+  },
+  ref: {
+    fontFamily: FONTS.semibold, fontSize: 12, letterSpacing: 0.4,
+    color: COLORS.textMuted, fontVariant: ["tabular-nums"],
+  },
+  cancelBtn: {
+    minWidth: 76,
+    height: 36,
+    paddingHorizontal: 14,
+    borderRadius: RADIUS.pill,
+    borderWidth: 1,
+    borderColor: COLORS.dangerLine,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cancelText: { fontFamily: FONTS.bold, fontSize: 13, color: COLORS.danger },
+  againBtn: { height: 36, flexDirection: "row", alignItems: "center", gap: 2, paddingLeft: SPACING.sm },
+  againText: { fontFamily: FONTS.bold, fontSize: 13, color: COLORS.accent },
 });

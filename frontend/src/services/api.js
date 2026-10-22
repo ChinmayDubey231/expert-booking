@@ -1,10 +1,24 @@
 import axios from "axios";
+import Constants from "expo-constants";
+import { Platform } from "react-native";
 
-// ─── CHANGE THIS to your local IP when testing on a physical device ──────────
-// Android emulator  → "http://10.0.2.2:5000"
-// iOS simulator     → "http://localhost:5000"
-// Physical device   → "http://<YOUR_MACHINE_IP>:5000"  e.g. "http://192.168.1.5:5000"
-export const BASE_URL = "http://192.168.1.5:5000";
+const API_PORT = 5000;
+
+// Where the backend lives, in order of preference:
+// 1. EXPO_PUBLIC_API_URL from frontend/.env — e.g. a deployed server, or when using --tunnel
+// 2. The computer running `expo start` (its LAN IP works for Expo Go on a phone and emulators)
+// 3. localhost, or 10.0.2.2 on an Android emulator (the emulator's alias for the host)
+function resolveBaseUrl() {
+  const fromEnv = process.env.EXPO_PUBLIC_API_URL;
+  if (fromEnv) return fromEnv.replace(/\/+$/, "");
+
+  let host = Constants.expoConfig?.hostUri?.split(":")[0];
+  const isLoopback = !host || host === "localhost" || host === "127.0.0.1";
+  if (isLoopback) host = Platform.OS === "android" ? "10.0.2.2" : "localhost";
+  return `http://${host}:${API_PORT}`;
+}
+
+export const BASE_URL = resolveBaseUrl();
 
 const api = axios.create({
   baseURL: BASE_URL,
@@ -17,10 +31,14 @@ api.interceptors.response.use(
   (err) => {
     const msg =
       err.response?.data?.message ||
-      err.message ||
+      (err.request && !err.response
+        ? `Can't reach the server at ${BASE_URL}. Is the backend running?`
+        : err.message) ||
       "Something went wrong. Please try again.";
-    return Promise.reject(new Error(msg));
-  },
+    const error = new Error(msg);
+    error.status = err.response?.status; // e.g. 409 when a slot was taken
+    return Promise.reject(error);
+  }
 );
 
 // Experts
@@ -31,5 +49,5 @@ export const fetchExpertById = (id) => api.get(`/experts/${id}`);
 export const createBooking = (data) => api.post("/bookings", data);
 export const fetchBookingsByEmail = (email) =>
   api.get("/bookings", { params: { email } });
-export const updateBookingStatus = (id, status) =>
-  api.patch(`/bookings/${id}/status`, { status });
+export const cancelBooking = (id, email) =>
+  api.patch(`/bookings/${id}/cancel`, { email });

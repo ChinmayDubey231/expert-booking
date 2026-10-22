@@ -1,57 +1,86 @@
+// "Pine & Porcelain" — the source of truth is the Foundations artboard on the
+// ExpertBook App Redesign canvas (Claude Design).
+
 export const COLORS = {
-  primary: "#2563EB",
-  primaryDark: "#1D4ED8",
-  primaryLight: "#EFF6FF",
-  secondary: "#0F172A",
-  accent: "#10B981",
-  warning: "#F59E0B",
-  error: "#EF4444",
-  success: "#10B981",
+  accent: "#0F6B5C",
+  accentPressed: "#0A5246",
+  accentTint: "#E2EDEB", // accent at 12% on white
+  accentRing: "rgba(15, 107, 92, 0.16)", // focus ring
 
-  background: "#F8FAFC",
+  ink: "#0F1F1C",
+  textSecondary: "#4A5A57",
+  textMuted: "#5F6E6B", // 5.4:1 on white, 4.9:1 on ground
+  placeholder: "#6B7976",
+
+  ground: "#F3F5F4",
   surface: "#FFFFFF",
-  border: "#E2E8F0",
-  borderLight: "#F1F5F9",
+  surfaceSunken: "#FAFBFB",
+  line: "#E1E6E4",
+  lineSoft: "#EDF0EF",
+  segment: "#E7EBEA",
 
-  textPrimary: "#0F172A",
-  textSecondary: "#475569",
-  textMuted: "#94A3B8",
-
-  statusPending: "#F59E0B",
-  statusConfirmed: "#2563EB",
-  statusCompleted: "#10B981",
-  statusCancelled: "#EF4444",
+  star: "#E9A23B", // icons only — too light for text
+  danger: "#B42318",
+  dangerTint: "#FDECEA",
+  dangerLine: "#F3C9C4",
+  warning: "#8A5A00",
+  warningTint: "#FDF3E1",
+  neutral: "#3D4A5C",
+  neutralTint: "#EAEDF1",
 };
 
-export const SPACING = {
-  xs: 4,
-  sm: 8,
-  md: 16,
-  lg: 24,
-  xl: 32,
+export const STATUS_COLORS = {
+  Confirmed: { fg: COLORS.accent, bg: COLORS.accentTint },
+  Pending: { fg: COLORS.warning, bg: COLORS.warningTint },
+  Completed: { fg: COLORS.neutral, bg: COLORS.neutralTint },
+  Cancelled: { fg: COLORS.danger, bg: COLORS.dangerTint },
 };
 
-export const RADIUS = {
-  sm: 6,
-  md: 10,
-  lg: 16,
-  full: 999,
+// Custom fonts need one family per weight (fontWeight is ignored for them on Android)
+export const FONTS = {
+  regular: "PlusJakartaSans_400Regular",
+  medium: "PlusJakartaSans_500Medium",
+  semibold: "PlusJakartaSans_600SemiBold",
+  bold: "PlusJakartaSans_700Bold",
+  extrabold: "PlusJakartaSans_800ExtraBold",
 };
+
+export const TYPE = {
+  display: { fontFamily: FONTS.extrabold, fontSize: 28, lineHeight: 34, letterSpacing: -0.5, color: COLORS.ink },
+  title: { fontFamily: FONTS.extrabold, fontSize: 22, lineHeight: 28, letterSpacing: -0.3, color: COLORS.ink },
+  heading: { fontFamily: FONTS.bold, fontSize: 17, lineHeight: 22, color: COLORS.ink },
+  body: { fontFamily: FONTS.medium, fontSize: 15, lineHeight: 22, color: COLORS.textSecondary },
+  bodyStrong: { fontFamily: FONTS.bold, fontSize: 15, lineHeight: 20, color: COLORS.ink },
+  small: { fontFamily: FONTS.medium, fontSize: 13, lineHeight: 18, color: COLORS.textSecondary },
+  smallStrong: { fontFamily: FONTS.bold, fontSize: 13, lineHeight: 18, color: COLORS.ink },
+  caption: { fontFamily: FONTS.semibold, fontSize: 12, lineHeight: 16, color: COLORS.textMuted },
+  eyebrow: {
+    fontFamily: FONTS.bold, fontSize: 12, lineHeight: 16,
+    letterSpacing: 0.6, textTransform: "uppercase", color: COLORS.textMuted,
+  },
+};
+
+export const SPACING = { xs: 4, sm: 8, md: 12, lg: 16, xl: 20, xxl: 24, xxxl: 32 };
+export const GUTTER = 20; // screen side padding
+
+export const RADIUS = { field: 12, button: 14, card: 16, hero: 20, pill: 999 };
 
 export const SHADOW = {
-  sm: {
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
+  // Sticky bottom bars
+  bar: {
+    shadowColor: COLORS.ink,
+    shadowOffset: { width: 0, height: -8 },
     shadowOpacity: 0.06,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowRadius: 24,
+    elevation: 8,
   },
-  md: {
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 10,
-    elevation: 5,
+  // Selected segment
+  raised: {
+    shadowColor: COLORS.ink,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.12,
+    shadowRadius: 3,
+    elevation: 2,
   },
 };
 
@@ -68,7 +97,7 @@ export const CATEGORIES = [
 ];
 
 export const CATEGORY_ICONS = {
-  All: "apps-outline",
+  All: "grid-outline",
   Technology: "laptop-outline",
   Business: "briefcase-outline",
   Design: "color-palette-outline",

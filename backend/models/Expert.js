@@ -24,7 +24,6 @@ const expertSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Text index for search
-expertSchema.index({ name: "text", category: "text" });
+expertSchema.index({ category: 1, rating: -1 });
 
 module.exports = mongoose.model("Expert", expertSchema);

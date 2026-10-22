@@ -1,28 +1,8 @@
 require("dotenv").config();
-const mongoose = require("mongoose");
 const Expert = require("./models/Expert");
+const Booking = require("./models/Booking");
 const connectDB = require("./config/db");
-
-// Generate slots for next 7 days
-const generateSlots = () => {
-  const slots = [];
-  const times = [
-    "09:00 AM", "10:00 AM", "11:00 AM",
-    "12:00 PM", "02:00 PM", "03:00 PM",
-    "04:00 PM", "05:00 PM",
-  ];
-
-  for (let i = 1; i <= 7; i++) {
-    const date = new Date();
-    date.setDate(date.getDate() + i);
-    const dateStr = date.toISOString().split("T")[0];
-
-    times.forEach((time) => {
-      slots.push({ date: dateStr, time, isBooked: false });
-    });
-  }
-  return slots;
-};
+const { buildSlots, upcomingDateKeys } = require("./utils/slots");
 
 const experts = [
   {
@@ -138,12 +118,13 @@ const experts = [
 const seed = async () => {
   try {
     await connectDB();
-    await Expert.deleteMany({});
-    console.log("🗑️  Cleared existing experts");
+    // Bookings reference expert IDs, which change on every seed
+    await Promise.all([Expert.deleteMany({}), Booking.deleteMany({})]);
+    console.log("🗑️  Cleared existing experts and bookings");
 
     const expertsWithSlots = experts.map((e) => ({
       ...e,
-      availableSlots: generateSlots(),
+      availableSlots: buildSlots(upcomingDateKeys()),
     }));
 
     await Expert.insertMany(expertsWithSlots);

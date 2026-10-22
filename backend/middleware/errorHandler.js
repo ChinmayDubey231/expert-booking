@@ -1,7 +1,10 @@
 const errorHandler = (err, req, res, next) => {
-  console.error(`[ERROR] ${err.message}`);
-  if (process.env.NODE_ENV === "development") {
-    console.error(err.stack);
+  // Expected 4xx outcomes (taken slot, not found…) carry a statusCode; only log real failures
+  if (!err.statusCode) {
+    console.error(`[ERROR] ${req.method} ${req.originalUrl}: ${err.message}`);
+    if (process.env.NODE_ENV === "development") {
+      console.error(err.stack);
+    }
   }
 
   // Mongoose CastError (invalid ObjectId)
@@ -23,7 +26,7 @@ const errorHandler = (err, req, res, next) => {
   if (err.code === 11000) {
     return res.status(409).json({
       success: false,
-      message: "This slot has already been booked.",
+      message: "This slot was just booked by someone else. Please choose another slot.",
     });
   }
 

@@ -1,79 +1,111 @@
 const mongoose = require("mongoose");
 const Booking = require("../models/Booking");
 const Expert = require("../models/Expert");
+const { isPastSlot } = require("../utils/slots");
+
+const httpError = (statusCode, message) => Object.assign(new Error(message), { statusCode });
+
+// Allowed status changes. Completed and Cancelled are final — un-cancelling would
+// re-activate a booking whose slot may already belong to someone else.
+const TRANSITIONS = {
+  Pending: ["Confirmed", "Cancelled"],
+  Confirmed: ["Completed", "Cancelled"],
+  Completed: [],
+  Cancelled: [],
+};
+
+const emitSlotEvent = (req, event, booking) => {
+  req.app.get("io").to(`expert_${booking.expertId}`).emit(event, {
+    expertId: booking.expertId.toString(),
+    date: booking.date,
+    timeSlot: booking.timeSlot,
+    bookingId: booking._id,
+  });
+};
+
+// Runs fn inside a transaction. withTransaction retries on transient errors such as
+// the write conflict two users get when racing for the same slot.
+const inTransaction = async (fn) => {
+  const session = await mongoose.startSession();
+  try {
+    let result;
+    await session.withTransaction(async () => {
+      result = await fn(session);
+    });
+    return result;
+  } finally {
+    await session.endSession();
+  }
+};
+
+// Marks the matching booking cancelled and frees its slot atomically
+const cancelBookingWhere = (filter) =>
+  inTransaction(async (session) => {
+    const booking = await Booking.findOne(filter).session(session);
+    if (!booking) throw httpError(404, "Booking not found");
+    if (!TRANSITIONS[booking.status].includes("Cancelled")) {
+      throw httpError(409, `This booking is already ${booking.status.toLowerCase()}.`);
+    }
+    if (isPastSlot(booking.date, booking.timeSlot)) {
+      throw httpError(409, "This session has already started and can't be cancelled.");
+    }
+
+    booking.status = "Cancelled";
+    await booking.save({ session });
+
+    await Expert.updateOne(
+      {
+        _id: booking.expertId,
+        availableSlots: { $elemMatch: { date: booking.date, time: booking.timeSlot } },
+      },
+      { $set: { "availableSlots.$.isBooked": false } },
+      { session }
+    );
+    return booking;
+  });
 
 // POST /bookings
 const createBooking = async (req, res, next) => {
-  // Use a MongoDB session for atomic transaction
-  const session = await mongoose.startSession();
-  session.startTransaction();
+  const { expertId, userName, email, phone, date, timeSlot, notes } = req.body;
+
+  if (isPastSlot(date, timeSlot)) {
+    return res.status(409).json({
+      success: false,
+      message: "This slot has already passed. Please choose another slot.",
+    });
+  }
 
   try {
-    const { expertId, userName, email, phone, date, timeSlot, notes } =
-      req.body;
+    const booking = await inTransaction(async (session) => {
+      // Reserve the slot. $elemMatch makes all three conditions apply to the SAME
+      // array element, so the positional `$` updates exactly that slot — and only
+      // if it is still free (optimistic lock).
+      const expert = await Expert.findOneAndUpdate(
+        {
+          _id: expertId,
+          availableSlots: { $elemMatch: { date, time: timeSlot, isBooked: false } },
+        },
+        { $set: { "availableSlots.$.isBooked": true } },
+        { session, projection: { name: 1 } }
+      );
 
-    // 1. Verify expert exists
-    const expert = await Expert.findById(expertId).session(session);
-    if (!expert) {
-      await session.abortTransaction();
-      return res
-        .status(404)
-        .json({ success: false, message: "Expert not found" });
-    }
+      if (!expert) {
+        const exists = await Expert.exists({ _id: expertId }).session(session);
+        throw exists
+          ? httpError(409, "This slot is no longer available. Please choose another slot.")
+          : httpError(404, "Expert not found");
+      }
 
-    // 2. Find the slot and check availability (atomic within transaction)
-    const slotIndex = expert.availableSlots.findIndex(
-      (s) => s.date === date && s.time === timeSlot && !s.isBooked,
-    );
-
-    if (slotIndex === -1) {
-      await session.abortTransaction();
-      return res.status(409).json({
-        success: false,
-        message:
-          "This slot is no longer available. Please choose another slot.",
-      });
-    }
-
-    // 3. Mark the slot as booked atomically
-    await Expert.findOneAndUpdate(
-      {
-        _id: expertId,
-        "availableSlots.date": date,
-        "availableSlots.time": timeSlot,
-        "availableSlots.isBooked": false, // Optimistic locking condition
-      },
-      {
-        $set: { "availableSlots.$.isBooked": true },
-      },
-      { session, new: true },
-    );
-
-    // 4. Create the booking record
-    // The unique index on (expertId, date, timeSlot) is the final safety net
-    const booking = new Booking({
-      expertId,
-      expertName: expert.name,
-      userName,
-      email,
-      phone,
-      date,
-      timeSlot,
-      notes,
+      // The partial unique index on (expertId, date, timeSlot) is the final safety net
+      const [created] = await Booking.create(
+        [{ expertId, expertName: expert.name, userName, email, phone, date, timeSlot, notes }],
+        { session }
+      );
+      return created;
     });
 
-    await booking.save({ session });
-    await session.commitTransaction();
-
-    // 5. Emit real-time update to all clients watching this expert
-    const io = req.app.get("io");
-    io.to(`expert_${expertId}`).emit("slot_booked", {
-      expertId,
-      date,
-      timeSlot,
-      bookingId: booking._id,
-      socketId: req.body.socketId || null,
-    });
+    // Notify everyone watching this expert so the slot disappears in real time
+    emitSlotEvent(req, "slot_booked", booking);
 
     res.status(201).json({
       success: true,
@@ -81,35 +113,14 @@ const createBooking = async (req, res, next) => {
       data: booking,
     });
   } catch (error) {
-    await session.abortTransaction();
-
-    // MongoDB duplicate key error — race condition caught at DB level
-    if (error.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        message:
-          "This slot was just booked by someone else. Please choose another slot.",
-      });
-    }
     next(error);
-  } finally {
-    session.endSession();
   }
 };
 
 // GET /bookings?email=user@example.com
 const getBookingsByEmail = async (req, res, next) => {
   try {
-    const { email } = req.query;
-
-    if (!email) {
-      return res.status(400).json({
-        success: false,
-        message: "Email query parameter is required",
-      });
-    }
-
-    const bookings = await Booking.find({ email: email.toLowerCase() })
+    const bookings = await Booking.find({ email: String(req.query.email).toLowerCase() })
       .sort({ createdAt: -1 })
       .lean();
 
@@ -119,49 +130,45 @@ const getBookingsByEmail = async (req, res, next) => {
   }
 };
 
-// PATCH /bookings/:id/status
+// PATCH /bookings/:id/cancel  { email }
+// The email must match the booking — a lightweight ownership check until the app has auth.
+const cancelBooking = async (req, res, next) => {
+  try {
+    const booking = await cancelBookingWhere({
+      _id: req.params.id,
+      email: String(req.body.email).toLowerCase(),
+    });
+    emitSlotEvent(req, "slot_freed", booking);
+    res.json({ success: true, message: "Booking cancelled", data: booking });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// PATCH /bookings/:id/status  { status }  (admin / testing)
 const updateBookingStatus = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
 
-    const allowedStatuses = ["Pending", "Confirmed", "Completed", "Cancelled"];
-    if (!allowedStatuses.includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid status. Allowed: ${allowedStatuses.join(", ")}`,
-      });
+    if (status === "Cancelled") {
+      const booking = await cancelBookingWhere({ _id: id });
+      emitSlotEvent(req, "slot_freed", booking);
+      return res.json({ success: true, message: "Status updated", data: booking });
     }
 
-    const booking = await Booking.findByIdAndUpdate(
-      id,
+    // Only update if the current status may move to the requested one (atomic check)
+    const allowedFrom = Object.keys(TRANSITIONS).filter((s) => TRANSITIONS[s].includes(status));
+    const booking = await Booking.findOneAndUpdate(
+      { _id: id, status: { $in: allowedFrom } },
       { status },
-      { new: true, runValidators: true },
+      { new: true, runValidators: true }
     );
 
     if (!booking) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Booking not found" });
-    }
-
-    // If cancelled, free up the slot
-    if (status === "Cancelled") {
-      await Expert.findOneAndUpdate(
-        {
-          _id: booking.expertId,
-          "availableSlots.date": booking.date,
-          "availableSlots.time": booking.timeSlot,
-        },
-        { $set: { "availableSlots.$.isBooked": false } },
-      );
-
-      const io = req.app.get("io");
-      io.to(`expert_${booking.expertId}`).emit("slot_freed", {
-        expertId: booking.expertId.toString(),
-        date: booking.date,
-        timeSlot: booking.timeSlot,
-      });
+      const existing = await Booking.findById(id).select("status").lean();
+      if (!existing) throw httpError(404, "Booking not found");
+      throw httpError(409, `Cannot change status from ${existing.status} to ${status}`);
     }
 
     res.json({ success: true, message: "Status updated", data: booking });
@@ -170,4 +177,4 @@ const updateBookingStatus = async (req, res, next) => {
   }
 };
 
-module.exports = { createBooking, getBookingsByEmail, updateBookingStatus };
+module.exports = { createBooking, getBookingsByEmail, cancelBooking, updateBookingStatus };
